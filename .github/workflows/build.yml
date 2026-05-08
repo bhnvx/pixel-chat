@@ -5,9 +5,14 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      server_ip:
+        description: 'Server IP'
+        required: true
+        default: '49.50.128.187'
 
 env:
-  VITE_SERVER_IP: 49.50.128.187
+  VITE_SERVER_IP: ${{ inputs.server_ip || '49.50.128.187' }}
   VITE_SERVER_PORT: 3031
   VITE_HTTP_PORT: 3030
 
@@ -44,6 +49,14 @@ jobs:
           echo "VITE_SERVER_PORT=${{ env.VITE_SERVER_PORT }}" >> .env
           echo "VITE_HTTP_PORT=${{ env.VITE_HTTP_PORT }}" >> .env
 
+      - name: Generate macOS icon
+        if: matrix.target == 'macos'
+        run: |
+          mkdir -p client/src-tauri/icons/icon.iconset
+          sips -z 32 32 client/src-tauri/icons/32x32.png --out client/src-tauri/icons/icon.iconset/icon_32x32.png
+          sips -z 128 128 client/src-tauri/icons/128x128.png --out client/src-tauri/icons/icon.iconset/icon_128x128.png
+          iconutil -c icns client/src-tauri/icons/icon.iconset -o client/src-tauri/icons/icon.icns
+
       - name: Build Tauri
         working-directory: client
         run: npx tauri build
@@ -64,3 +77,4 @@ jobs:
           name: pixel-chat-macos
           path: |
             client/src-tauri/target/release/bundle/dmg/*.dmg
+            client/src-tauri/target/release/bundle/macos/*.app
