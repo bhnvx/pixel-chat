@@ -162,8 +162,16 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
   };
 
   const ignoringRef = useRef(true);
+  const [platform, setPlatform] = useState('windows');
 
   useEffect(() => {
+    const inv = getInvoke();
+    if (!inv) return;
+    inv('get_platform').then((p: string) => setPlatform(p));
+  }, []);
+
+  useEffect(() => {
+    if (platform !== 'windows') return;
     const inv = getInvoke();
     if (!inv) return;
 
@@ -205,7 +213,7 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
 
     const interval = setInterval(poll, 50);
     return () => clearInterval(interval);
-  }, []);
+  }, [platform]);
 
   const drawAnimal = useCallback((ctx: CanvasRenderingContext2D, player: PlayerData) => {
     const animalDef = ANIMALS.find((a) => a.name === player.animal) || ANIMALS[0];

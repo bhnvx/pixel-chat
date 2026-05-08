@@ -12,8 +12,19 @@ struct CursorPos {
 }
 
 #[tauri::command]
+fn get_platform() -> String {
+    if cfg!(target_os = "macos") {
+        "macos".to_string()
+    } else {
+        "windows".to_string()
+    }
+}
+
+#[tauri::command]
 fn set_ignore_cursor_events(window: tauri::Window, ignore: bool) {
-    let _ = window.set_ignore_cursor_events(ignore);
+    if cfg!(target_os = "windows") {
+        let _ = window.set_ignore_cursor_events(ignore);
+    }
 }
 
 #[tauri::command]
@@ -52,7 +63,9 @@ fn enter_overlay(window: tauri::Window) {
         }));
     }
     let _ = window.set_resizable(false);
-    let _ = window.set_ignore_cursor_events(true);
+    if cfg!(target_os = "windows") {
+        let _ = window.set_ignore_cursor_events(true);
+    }
 }
 
 #[tauri::command]
@@ -60,7 +73,9 @@ fn switch_monitor(window: tauri::Window) {
     if let Ok(monitors) = window.available_monitors() {
         if monitors.len() < 2 { return; }
 
-        let _ = window.set_ignore_cursor_events(false);
+        if cfg!(target_os = "windows") {
+            let _ = window.set_ignore_cursor_events(false);
+        }
 
         let current_pos = window.outer_position().unwrap_or(tauri::PhysicalPosition { x: 0, y: 0 });
 
@@ -88,13 +103,17 @@ fn switch_monitor(window: tauri::Window) {
             height: size.height,
         }));
 
-        let _ = window.set_ignore_cursor_events(true);
+        if cfg!(target_os = "windows") {
+            let _ = window.set_ignore_cursor_events(true);
+        }
     }
 }
 
 #[tauri::command]
 fn exit_overlay(window: tauri::Window) {
-    let _ = window.set_ignore_cursor_events(false);
+    if cfg!(target_os = "windows") {
+        let _ = window.set_ignore_cursor_events(false);
+    }
     let _ = window.set_resizable(true);
     let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
         width: 900.0,
@@ -128,6 +147,7 @@ fn take_screenshot(window: tauri::Window) -> Result<String, String> {
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            get_platform,
             set_ignore_cursor_events,
             get_cursor_position,
             close_app,
