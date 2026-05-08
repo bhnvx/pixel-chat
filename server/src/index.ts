@@ -58,7 +58,7 @@ function getAdminData() {
   const roomList = Array.from(rooms.values()).map((room) => ({
     code: room.code,
     playerCount: room.players.size,
-    players: Array.from(room.players.values()).map(({ id, name, animal }) => ({ id, name, animal })),
+    players: Array.from(room.players.values()).map(({ id, name, animal, ip }) => ({ id, name, animal, ip })),
   }));
 
   let totalPlayers = 0;
@@ -70,6 +70,7 @@ function getAdminData() {
     totalRooms: rooms.size,
     totalPlayers,
     rooms: roomList,
+    blacklist: Array.from(blacklist),
   };
 }
 
@@ -113,6 +114,63 @@ const httpServer = createServer(async (req, res) => {
       'Set-Cookie': 'admin_token=; Path=/; HttpOnly; Max-Age=0',
     });
     res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.url === '/api/admin/delete-room' && req.method === 'POST') {
+    if (!isAdminAuthed(req)) { res.writeHead(401); res.end(); return; }
+    const body = await parseBody(req);
+    const { roomCode } = JSON.parse(body);
+    const room = rooms.get(roomCode);
+    if (room) {
+      room.players.forEach((p) => p.ws.close(1000, 'Room deleted by admin'));
+      rooms.delete(roomCode);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.url === '/api/admin/kick' && req.method === 'POST') {
+    if (!isAdminAuthed(req)) { res.writeHead(401); res.end(); return; }
+    const body = await parseBody(req);
+    const { roomCode, playerId: kickId } = JSON.parse(body);
+    const room = rooms.get(roomCode);
+    if (room) {
+      const player = room.players.get(kickId);
+      if (player) {
+        player.ws.close(1000, 'Kicked by admin');
+        room.players.delete(kickId);
+        broadcast(room, { type: 'player_left', playerId: kickId });
+        if (room.players.size === 0) rooms.delete(roomCode);
+      }
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.url === '/api/admin/blacklist' && req.method === 'POST') {
+    if (!isAdminAuthed(req)) { res.writeHead(401); res.end(); return; }
+    const body = await parseBody(req);
+    const { ip, action } = JSON.parse(body);
+    if (action === 'add') {
+      blacklist.add(ip);
+      rooms.forEach((room) => {
+        room.players.forEach((p, id) => {
+          if (p.ip === ip) {
+            p.ws.close(1008, 'Blocked');
+            room.players.delete(id);
+            broadcast(room, { type: 'player_left', playerId: id });
+          }
+        });
+        if (room.players.size === 0) rooms.delete(room.code);
+      });
+    } else if (action === 'remove') {
+      blacklist.delete(ip);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, blacklist: Array.from(blacklist) }));
     return;
   }
 
@@ -166,8 +224,11 @@ interface Player {
   animal: string;
   x: number;
   y: number;
+  ip: string;
   ws: WebSocket;
 }
+
+const blacklist = new Set<string>();
 
 interface Room {
   code: string;
@@ -201,9 +262,15 @@ function getPlayersState(room: Room): object[] {
 
 const wss = new WebSocketServer({ host: '0.0.0.0', port: WS_PORT, maxPayload: 10 * 1024 * 1024 });
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   const playerId = generateId();
+  const playerIp = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || '').replace('::ffff:', '');
   let currentRoom: Room | null = null;
+
+  if (blacklist.has(playerIp)) {
+    ws.close(1008, 'Blocked');
+    return;
+  }
 
   ws.on('message', (raw) => {
     let msg: any;
@@ -223,6 +290,7 @@ wss.on('connection', (ws) => {
           animal: msg.animal,
           x: 200 + Math.random() * 400,
           y: 200 + Math.random() * 200,
+          ip: playerIp,
           ws,
         };
         room.players.set(playerId, player);
@@ -244,12 +312,18 @@ wss.on('connection', (ws) => {
           ws.send(JSON.stringify({ type: 'error', message: '방을 찾을 수 없습니다.' }));
           return;
         }
+        const nameTaken = Array.from(room.players.values()).some((p) => p.name === msg.name);
+        if (nameTaken) {
+          ws.send(JSON.stringify({ type: 'error', message: '이미 사용 중인 닉네임입니다.' }));
+          return;
+        }
         const player: Player = {
           id: playerId,
           name: msg.name,
           animal: msg.animal,
           x: 200 + Math.random() * 400,
           y: 200 + Math.random() * 200,
+          ip: playerIp,
           ws,
         };
         room.players.set(playerId, player);
@@ -404,6 +478,24 @@ const ADMIN_HTML = `<!DOCTYPE html>
   }
   .player-row:last-child { border-bottom: none; }
   .player-dot { font-size: 0.7rem; }
+  .player-ip { color: #555; font-size: 0.65rem; margin-left: auto; }
+  .btn-sm {
+    padding: 0.15rem 0.4rem; border: none; border-radius: 4px;
+    font-family: 'Courier New', monospace; font-size: 0.65rem;
+    cursor: pointer; margin-left: 0.3rem;
+  }
+  .btn-kick { background: #e94560; color: #fff; }
+  .btn-ban { background: #ff7043; color: #fff; }
+  .btn-del { background: #e94560; color: #fff; font-size: 0.7rem; padding: 0.2rem 0.5rem; }
+  .btn-unban { background: #555; color: #fff; }
+
+  .blacklist-section { margin-top: 1.5rem; }
+  .bl-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; font-size: 0.8rem; color: #ccc; }
+  .bl-input { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+  .bl-input input {
+    padding: 0.4rem 0.75rem; background: #1a1a2e; border: 1px solid #0f3460;
+    border-radius: 6px; color: #fff; font-family: 'Courier New', monospace; font-size: 0.8rem; outline: none;
+  }
 
   .empty { text-align: center; color: #555; padding: 3rem; font-size: 0.9rem; }
   .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #66bb6a; display: inline-block; margin-right: 0.5rem; }
@@ -459,6 +551,15 @@ const ADMIN_HTML = `<!DOCTYPE html>
     <div class="section-title">Active Rooms</div>
     <div id="roomsContainer" class="rooms-grid">
       <div class="empty">Loading...</div>
+    </div>
+
+    <div class="blacklist-section">
+      <div class="section-title">Blacklist</div>
+      <div class="bl-input">
+        <input type="text" id="banIpInput" placeholder="IP 주소" />
+        <button class="btn-sm btn-kick" onclick="addBlacklist()">추가</button>
+      </div>
+      <div id="blacklistContainer"></div>
     </div>
   </div>
 
@@ -545,13 +646,62 @@ async function refresh() {
     container.innerHTML = data.rooms.map(function(room) {
       var players = room.players.map(function(p) {
         var color = ANIMAL_COLORS[p.animal] || '#888';
-        return '<div class="player-row"><span class="player-dot" style="color:' + color + '">'+String.fromCharCode(9679)+'</span>' + p.name + ' <span style="color:#555;font-size:0.7rem">(' + p.animal + ')</span></div>';
+        return '<div class="player-row">'
+          + '<span class="player-dot" style="color:' + color + '">' + String.fromCharCode(9679) + '</span>'
+          + p.name
+          + ' <span style="color:#555;font-size:0.7rem">(' + p.animal + ')</span>'
+          + '<span class="player-ip">' + p.ip + '</span>'
+          + '<button class="btn-sm btn-kick" onclick="kickPlayer(\\x27' + room.code + '\\x27,\\x27' + p.id + '\\x27)">강퇴</button>'
+          + '<button class="btn-sm btn-ban" onclick="banPlayer(\\x27' + p.ip + '\\x27)">차단</button>'
+          + '</div>';
       }).join('');
-      return '<div class="room-card"><div class="room-header"><span class="room-code">' + room.code + '</span><span class="room-count">' + room.playerCount + '명</span></div>' + players + '</div>';
+      return '<div class="room-card"><div class="room-header">'
+        + '<span class="room-code">' + room.code + '</span>'
+        + '<span class="room-count">' + room.playerCount + '명</span>'
+        + '<button class="btn-sm btn-del" onclick="deleteRoom(\\x27' + room.code + '\\x27)">삭제</button>'
+        + '</div>' + players + '</div>';
     }).join('');
+
+    var blContainer = document.getElementById('blacklistContainer');
+    if (data.blacklist && data.blacklist.length > 0) {
+      blContainer.innerHTML = data.blacklist.map(function(ip) {
+        return '<div class="bl-row"><span>' + ip + '</span><button class="btn-sm btn-unban" onclick="removeBlacklist(\\x27' + ip + '\\x27)">해제</button></div>';
+      }).join('');
+    } else {
+      blContainer.innerHTML = '<div style="color:#555;font-size:0.8rem">차단된 IP가 없습니다.</div>';
+    }
   } catch(e) {
     document.getElementById('roomsContainer').innerHTML = '<div class="empty">서버 연결 실패</div>';
   }
+}
+
+async function deleteRoom(code) {
+  await fetch('/api/admin/delete-room', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({roomCode: code}) });
+  refresh();
+}
+
+async function kickPlayer(code, pid) {
+  await fetch('/api/admin/kick', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({roomCode: code, playerId: pid}) });
+  refresh();
+}
+
+async function banPlayer(ip) {
+  if (!confirm(ip + ' 을(를) 차단하시겠습니까?')) return;
+  await fetch('/api/admin/blacklist', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ip: ip, action: 'add'}) });
+  refresh();
+}
+
+async function addBlacklist() {
+  var ip = document.getElementById('banIpInput').value.trim();
+  if (!ip) return;
+  await fetch('/api/admin/blacklist', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ip: ip, action: 'add'}) });
+  document.getElementById('banIpInput').value = '';
+  refresh();
+}
+
+async function removeBlacklist(ip) {
+  await fetch('/api/admin/blacklist', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ip: ip, action: 'remove'}) });
+  refresh();
 }
 
 document.getElementById('loginPw').addEventListener('keydown', function(e) {

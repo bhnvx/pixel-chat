@@ -101,8 +101,26 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
     };
 
     ws.addEventListener('message', handleMessage);
-    return () => ws.removeEventListener('message', handleMessage);
-  }, [ws]);
+
+    const handleClose = (e: CloseEvent) => {
+      getInvoke()?.('set_ignore_cursor_events', { ignore: false });
+      getInvoke()?.('exit_overlay');
+      if (e.reason === 'Room deleted by admin') {
+        alert('관리자에 의해 방이 삭제되었습니다.');
+      } else if (e.reason === 'Kicked by admin') {
+        alert('관리자에 의해 강퇴되었습니다.');
+      } else if (e.reason === 'Blocked') {
+        alert('관리자에 의해 차단되었습니다.');
+      }
+      onLeave();
+    };
+    ws.addEventListener('close', handleClose);
+
+    return () => {
+      ws.removeEventListener('message', handleMessage);
+      ws.removeEventListener('close', handleClose);
+    };
+  }, [ws, onLeave]);
 
   useEffect(() => {
     if (showHistory) historyEndRef.current?.scrollIntoView({ behavior: 'smooth' });
