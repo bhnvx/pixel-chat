@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Lobby from './components/Lobby';
 import GameRoom from './components/GameRoom';
 
-const LOCAL_VERSION = '1.0.0';
+const LOCAL_VERSION = '1.0.1';
 
 export interface GameState {
   roomCode: string;
