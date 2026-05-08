@@ -3,43 +3,25 @@
   "version": "1.0.0",
   "private": true,
   "description": "Pixel animal chat desktop app",
-  "author": "SessionCat",
-  "main": "electron/main.js",
+  "author": "PixelChat",
   "scripts": {
-    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "build": "vite build && electron-builder --win --dir",
-    "preview": "vite preview"
+    "dev": "vite",
+    "build": "vite build",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.5.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0",
     "@types/react": "^18.2.48",
     "@types/react-dom": "^18.2.18",
     "@vitejs/plugin-react": "^4.2.1",
-    "7zip-bin": "^5.2.0",
-    "concurrently": "^8.2.2",
-    "electron": "28.1.4",
-    "electron-builder": "^24.9.1",
     "typescript": "^5.3.3",
-    "vite": "^5.0.12",
-    "wait-on": "^7.2.0"
-  },
-  "build": {
-    "appId": "com.pixelchat.app",
-    "productName": "Pixel Chat",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "electron/**/*"
-    ],
-    "win": {
-      "target": "dir",
-      "icon": null,
-      "signAndEditExecutable": false
-    }
+    "vite": "^5.0.12"
   }
 }

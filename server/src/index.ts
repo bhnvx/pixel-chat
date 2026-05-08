@@ -1,4 +1,59 @@
+import { createServer } from 'http';
+import { readFileSync, existsSync, statSync } from 'fs';
+import { join, extname } from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
+
+const APP_VERSION = '1.0.0';
+const HTTP_PORT = 3030;
+const WS_PORT = 3031;
+const PUBLIC_DIR = join(__dirname, '..', 'public');
+
+// --- HTTP Server (버전 체크 + 프론트엔드 서빙) ---
+
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+};
+
+const httpServer = createServer((req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  if (req.url === '/api/version') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ version: APP_VERSION }));
+    return;
+  }
+
+  let filePath = join(PUBLIC_DIR, req.url === '/' ? 'index.html' : req.url!);
+
+  if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+    filePath = join(PUBLIC_DIR, 'index.html');
+  }
+
+  if (!existsSync(filePath)) {
+    res.writeHead(404);
+    res.end('Not found');
+    return;
+  }
+
+  const ext = extname(filePath);
+  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+  const content = readFileSync(filePath);
+  res.writeHead(200, { 'Content-Type': contentType });
+  res.end(content);
+});
+
+httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
+  console.log(`HTTP server running on http://0.0.0.0:${HTTP_PORT}`);
+  console.log(`App version: ${APP_VERSION}`);
+});
+
+// --- WebSocket Server ---
 
 interface Player {
   id: string;
@@ -39,7 +94,7 @@ function getPlayersState(room: Room): object[] {
   }));
 }
 
-const wss = new WebSocketServer({ host: '0.0.0.0', port: 3031 });
+const wss = new WebSocketServer({ host: '0.0.0.0', port: WS_PORT });
 
 wss.on('connection', (ws) => {
   const playerId = generateId();
@@ -147,4 +202,4 @@ wss.on('connection', (ws) => {
   });
 });
 
-console.log('WebSocket server running on ws://0.0.0.0:3031');
+console.log(`WebSocket server running on ws://0.0.0.0:${WS_PORT}`);

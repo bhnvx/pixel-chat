@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "tsx src/index.ts",
+    "deploy": "cd ../client && npm run build && cp -r dist/* ../server/public/ && cd ../server",
     "build": "tsc",
     "start": "node dist/index.js"
   },

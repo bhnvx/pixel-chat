@@ -3,13 +3,7 @@ import { ANIMALS } from '../assets/animals';
 import { GameState } from '../App';
 import PixelAnimal from './PixelAnimal';
 
-declare global {
-  interface Window {
-    electronAPI?: {
-      setIgnoreMouseEvents: (ignore: boolean, options?: { forward: boolean }) => void;
-    };
-  }
-}
+const invoke = (window as any).__TAURI__?.core?.invoke;
 
 interface LobbyProps {
   onJoin: (state: GameState, ws: WebSocket) => void;
@@ -24,9 +18,9 @@ export default function Lobby({ onJoin }: LobbyProps) {
   const [connecting, setConnecting] = useState(false);
 
   useEffect(() => {
-    window.electronAPI?.setIgnoreMouseEvents(false);
+    invoke?.('set_ignore_cursor_events', { ignore: false });
     return () => {
-      window.electronAPI?.setIgnoreMouseEvents(true, { forward: true });
+      invoke?.('set_ignore_cursor_events', { ignore: true });
     };
   }, []);
 
@@ -80,7 +74,9 @@ export default function Lobby({ onJoin }: LobbyProps) {
   return (
     <div style={styles.container}>
       <div style={styles.panel}>
-      <button style={styles.closeButton} onClick={() => window.close()}>X</button>
+      <button style={styles.closeButton} onClick={() => {
+          invoke?.('close_app') || window.close();
+        }}>X</button>
       <h1 style={styles.title}>Pixel Chat</h1>
       <p style={styles.subtitle}>픽셀 동물 채팅</p>
 

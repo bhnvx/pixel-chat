@@ -2,13 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { GameState, PlayerData } from '../App';
 import { ANIMALS } from '../assets/animals';
 
-declare global {
-  interface Window {
-    electronAPI?: {
-      setIgnoreMouseEvents: (ignore: boolean, options?: { forward: boolean }) => void;
-    };
-  }
-}
+const invoke = (window as any).__TAURI__?.core?.invoke;
 
 interface ChatBubble {
   playerId: string;
@@ -112,47 +106,57 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
     return () => clearInterval(interval);
   }, []);
 
+  const ignoringRef = useRef(true);
+
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      const isInteractive = el && (
-        el.tagName === 'INPUT' ||
-        el.tagName === 'BUTTON' ||
-        el.closest('[data-interactive]') !== null
-      );
+    if (!invoke) return;
 
-      const canvas = canvasRef.current;
-      if (!isInteractive && canvas) {
-        const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
+    const poll = async () => {
+      try {
+        const pos: { x: number; y: number } = await invoke('get_cursor_position');
+        const el = document.elementFromPoint(pos.x, pos.y);
+        const isUI = el && (
+          el.tagName === 'INPUT' ||
+          el.tagName === 'BUTTON' ||
+          el.closest('[data-interactive]') !== null
+        );
 
-        let foundPlayer: PlayerData | null = null;
-        for (const p of playersRef.current.values()) {
-          const dist = Math.sqrt((x - p.x) ** 2 + (y - p.y) ** 2);
-          if (dist < 35) { foundPlayer = p; break; }
-        }
+        let shouldIgnore = true;
 
-        if (foundPlayer) {
-          setHoveredPlayer({ name: foundPlayer.name, x: e.clientX, y: e.clientY });
-          window.electronAPI?.setIgnoreMouseEvents(false);
-          return;
-        } else {
+        if (isUI) {
+          shouldIgnore = false;
           setHoveredPlayer(null);
-        }
-      }
+        } else {
+          const canvas = canvasRef.current;
+          if (canvas) {
+            const rect = canvas.getBoundingClientRect();
+            const x = pos.x - rect.left;
+            const y = pos.y - rect.top;
 
-      if (isInteractive) {
-        setHoveredPlayer(null);
-        window.electronAPI?.setIgnoreMouseEvents(false);
-      } else {
-        setHoveredPlayer(null);
-        window.electronAPI?.setIgnoreMouseEvents(true, { forward: true });
-      }
+            let foundPlayer: PlayerData | null = null;
+            for (const p of playersRef.current.values()) {
+              const dist = Math.sqrt((x - p.x) ** 2 + (y - p.y) ** 2);
+              if (dist < 35) { foundPlayer = p; break; }
+            }
+
+            if (foundPlayer) {
+              shouldIgnore = false;
+              setHoveredPlayer({ name: foundPlayer.name, x: pos.x, y: pos.y });
+            } else {
+              setHoveredPlayer(null);
+            }
+          }
+        }
+
+        if (shouldIgnore !== ignoringRef.current) {
+          ignoringRef.current = shouldIgnore;
+          invoke('set_ignore_cursor_events', { ignore: shouldIgnore });
+        }
+      } catch {}
     };
 
-    document.addEventListener('mousemove', handleMouseMove);
-    return () => document.removeEventListener('mousemove', handleMouseMove);
+    const interval = setInterval(poll, 50);
+    return () => clearInterval(interval);
   }, []);
 
   const drawAnimal = useCallback((ctx: CanvasRenderingContext2D, player: PlayerData) => {
@@ -324,7 +328,7 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
         <span style={styles.roomCode}>방 코드: {initialState.roomCode}</span>
         <button
           style={styles.copyButton}
-          onClick={() => navigator.clipboard.writeText(initialState.roomCode)}
+          onClick={() => navigator.clipboard.writeText(initialState.roomCode).then(() => alert('방 코드가 복사되었습니다.'))}
         >
           복사
         </button>
@@ -388,9 +392,11 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
             )}
             {chatHistory.map((h, i) => (
               <div key={i} style={styles.historyItem}>
-                <span style={{ color: '#888', fontSize: '0.7rem' }}>{formatTime(h.timestamp)}</span>
-                <span style={{ color: '#e94560', fontWeight: 'bold' }}>{h.name}</span>
-                <span style={{ color: '#ddd' }}>{h.message}</span>
+                <div style={styles.historyMeta}>
+                  <span style={{ color: '#888', fontSize: '0.7rem', flexShrink: 0 }}>{formatTime(h.timestamp)}</span>
+                  <span style={{ color: '#e94560', fontWeight: 'bold', flexShrink: 0 }}>{h.name}</span>
+                </div>
+                <div style={styles.historyMessage}>{h.message}</div>
               </div>
             ))}
             <div ref={historyEndRef} />
@@ -547,11 +553,24 @@ const styles: Record<string, React.CSSProperties> = {
   },
   historyItem: {
     display: 'flex',
-    gap: '0.4rem',
-    padding: '0.2rem 0',
+    flexDirection: 'column',
+    gap: '0.15rem',
+    padding: '0.3rem 0',
     fontSize: '0.75rem',
     fontFamily: 'Courier New, monospace',
+    borderBottom: '1px solid rgba(255,255,255,0.05)',
   },
+  historyMeta: {
+    display: 'flex',
+    gap: '0.4rem',
+    alignItems: 'center',
+  },
+  historyMessage: {
+    color: '#ddd',
+    paddingLeft: '0.2rem',
+    wordBreak: 'break-all',
+    lineHeight: '1.4',
+  } as React.CSSProperties,
   canvas: {
     flex: 1,
     width: '100%',
@@ -562,7 +581,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(22, 33, 62, 0.85)',
     borderRadius: '8px',
     position: 'absolute',
-    bottom: '1rem',
+    bottom: '3.5rem',
     left: '50%',
     transform: 'translateX(-50%)',
     width: '400px',
