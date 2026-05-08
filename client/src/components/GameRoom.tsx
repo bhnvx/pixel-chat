@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { GameState, PlayerData } from '../App';
 import { ANIMALS } from '../assets/animals';
 
-const invoke = (window as any).__TAURI__?.core?.invoke;
+const getInvoke = () => (window as any).__TAURI__?.core?.invoke;
 
 interface ChatBubble {
   playerId: string;
@@ -123,14 +123,35 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
     return () => clearInterval(interval);
   }, []);
 
+  const handleCanvasHover = (e: React.MouseEvent) => {
+    if (isDragging) {
+      const me = playersRef.current.get(initialState.playerId);
+      if (me) setHoveredPlayer({ name: me.name, x: e.clientX, y: e.clientY });
+      return;
+    }
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    let found: PlayerData | null = null;
+    for (const p of playersRef.current.values()) {
+      const dist = Math.sqrt((x - p.x) ** 2 + (y - p.y) ** 2);
+      if (dist < 35) { found = p; break; }
+    }
+    setHoveredPlayer(found ? { name: found.name, x: e.clientX, y: e.clientY } : null);
+  };
+
   const ignoringRef = useRef(true);
 
   useEffect(() => {
-    if (!invoke) return;
+    const inv = getInvoke();
+    if (!inv) return;
 
     const poll = async () => {
       try {
-        const pos: { x: number; y: number } = await invoke('get_cursor_position');
+        const pos: { x: number; y: number } = await inv('get_cursor_position');
         const el = document.elementFromPoint(pos.x, pos.y);
         const isUI = el && (
           el.tagName === 'INPUT' ||
@@ -142,32 +163,24 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
 
         if (isUI) {
           shouldIgnore = false;
-          setHoveredPlayer(null);
         } else {
           const canvas = canvasRef.current;
           if (canvas) {
             const rect = canvas.getBoundingClientRect();
             const x = pos.x - rect.left;
             const y = pos.y - rect.top;
-
-            let foundPlayer: PlayerData | null = null;
             for (const p of playersRef.current.values()) {
-              const dist = Math.sqrt((x - p.x) ** 2 + (y - p.y) ** 2);
-              if (dist < 35) { foundPlayer = p; break; }
-            }
-
-            if (foundPlayer) {
-              shouldIgnore = false;
-              setHoveredPlayer({ name: foundPlayer.name, x: pos.x, y: pos.y });
-            } else {
-              setHoveredPlayer(null);
+              if (Math.sqrt((x - p.x) ** 2 + (y - p.y) ** 2) < 35) {
+                shouldIgnore = false;
+                break;
+              }
             }
           }
         }
 
         if (shouldIgnore !== ignoringRef.current) {
           ignoringRef.current = shouldIgnore;
-          invoke('set_ignore_cursor_events', { ignore: shouldIgnore });
+          inv('set_ignore_cursor_events', { ignore: shouldIgnore });
         }
       } catch {}
     };
@@ -303,6 +316,8 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
     }
   };
 
+  const lastSentRef = useRef(0);
+
   const handleCanvasMouseMove = (e: React.MouseEvent) => {
     if (!isDragging) return;
     const canvas = canvasRef.current;
@@ -320,10 +335,18 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
       return next;
     });
 
-    ws.send(JSON.stringify({ type: 'move', x, y }));
+    const now = Date.now();
+    if (now - lastSentRef.current > 50) {
+      lastSentRef.current = now;
+      ws.send(JSON.stringify({ type: 'move', x, y }));
+    }
   };
 
   const handleCanvasMouseUp = () => {
+    if (isDragging) {
+      const me = players.get(initialState.playerId);
+      if (me) ws.send(JSON.stringify({ type: 'move', x: me.x, y: me.y }));
+    }
     setIsDragging(false);
   };
 
@@ -334,13 +357,24 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
     setChatInput('');
   };
 
+  const lastScreenshotRef = useRef(0);
+
   const handleScreenshot = async () => {
-    if (!invoke) return;
+    const now = Date.now();
+    const remaining = 60000 - (now - lastScreenshotRef.current);
+    if (remaining > 0) {
+      alert(`캡처는 ${Math.ceil(remaining / 1000)}초 후에 가능합니다.`);
+      return;
+    }
+    const inv = getInvoke();
+    if (!inv) return;
     try {
-      const image: string = await invoke('take_screenshot');
+      lastScreenshotRef.current = Date.now();
+      const image: string = await inv('take_screenshot');
       ws.send(JSON.stringify({ type: 'screenshot', image }));
     } catch (e) {
       console.error('Screenshot failed:', e);
+      lastScreenshotRef.current = 0;
     }
   };
 
@@ -352,6 +386,9 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
   return (
     <div style={styles.container}>
       <div style={styles.header} data-interactive>
+        <div style={{ cursor: 'grab', padding: '0.3rem 0', marginRight: '0.5rem' }} onMouseDown={() => getInvoke()?.('start_dragging')}>
+          ≡
+        </div>
         <span style={styles.roomCode}>방 코드: {initialState.roomCode}</span>
         <button
           style={styles.copyButton}
@@ -388,6 +425,9 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
           onClick={() => setShowHistory((v) => !v)}
         >
           채팅 기록
+        </button>
+        <button style={styles.monitorButton} onClick={() => getInvoke()?.('switch_monitor')}>
+          모니터 전환
         </button>
         <button style={styles.leaveButton} onClick={onLeave}>나가기</button>
       </div>
@@ -453,9 +493,9 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
         ref={canvasRef}
         style={styles.canvas}
         onMouseDown={handleCanvasMouseDown}
-        onMouseMove={handleCanvasMouseMove}
+        onMouseMove={(e) => { handleCanvasMouseMove(e); handleCanvasHover(e); }}
         onMouseUp={handleCanvasMouseUp}
-        onMouseLeave={handleCanvasMouseUp}
+        onMouseLeave={() => { handleCanvasMouseUp(); setHoveredPlayer(null); }}
       />
 
       <form style={styles.chatForm} onSubmit={handleChat} data-interactive>
@@ -491,8 +531,7 @@ const styles: Record<string, React.CSSProperties> = {
     left: '50%',
     transform: 'translateX(-50%)',
     zIndex: 10,
-    WebkitAppRegion: 'drag',
-  } as React.CSSProperties,
+  },
   roomCode: {
     color: '#e94560',
     fontFamily: 'Courier New, monospace',
@@ -508,14 +547,12 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontFamily: 'Courier New, monospace',
     fontSize: '0.7rem',
-    WebkitAppRegion: 'no-drag',
-  } as React.CSSProperties,
+  },
   playerCount: {
     color: '#ccc',
     fontFamily: 'Courier New, monospace',
     fontSize: '0.75rem',
-    WebkitAppRegion: 'no-drag',
-  } as React.CSSProperties,
+  },
   playerListDropdown: {
     position: 'absolute',
     top: '100%',
@@ -547,8 +584,7 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontFamily: 'Courier New, monospace',
     fontSize: '0.7rem',
-    WebkitAppRegion: 'no-drag',
-  } as React.CSSProperties,
+  },
   screenshotOverlay: {
     position: 'fixed',
     top: 0,
@@ -590,8 +626,17 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontFamily: 'Courier New, monospace',
     fontSize: '0.7rem',
-    WebkitAppRegion: 'no-drag',
-  } as React.CSSProperties,
+  },
+  monitorButton: {
+    padding: '0.3rem 0.75rem',
+    background: '#0f3460',
+    border: 'none',
+    borderRadius: '6px',
+    color: '#ccc',
+    cursor: 'pointer',
+    fontFamily: 'Courier New, monospace',
+    fontSize: '0.7rem',
+  },
   leaveButton: {
     padding: '0.3rem 0.75rem',
     background: 'transparent',
@@ -601,8 +646,7 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontFamily: 'Courier New, monospace',
     fontSize: '0.75rem',
-    WebkitAppRegion: 'no-drag',
-  } as React.CSSProperties,
+  },
   historyPanel: {
     position: 'absolute',
     top: '40px',

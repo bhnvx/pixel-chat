@@ -54,12 +54,16 @@ export default function App() {
     );
   }
 
+  const getInvoke = () => (window as any).__TAURI__?.core?.invoke;
+
   const handleJoin = (state: GameState, socket: WebSocket) => {
+    getInvoke()?.('enter_overlay');
     setGameState(state);
     setWs(socket);
   };
 
   const handleLeave = () => {
+    getInvoke()?.('exit_overlay');
     ws?.close();
     setWs(null);
     setGameState(null);

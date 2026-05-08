@@ -18,13 +18,89 @@ fn set_ignore_cursor_events(window: tauri::Window, ignore: bool) {
 
 #[tauri::command]
 fn get_cursor_position(window: tauri::Window) -> Result<CursorPos, String> {
-    let pos = window.cursor_position().map_err(|e| e.to_string())?;
-    Ok(CursorPos { x: pos.x, y: pos.y })
+    let cursor = window.cursor_position().map_err(|e| e.to_string())?;
+    let win_pos = window.outer_position().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    Ok(CursorPos {
+        x: (cursor.x - win_pos.x as f64) / scale,
+        y: (cursor.y - win_pos.y as f64) / scale,
+    })
 }
 
 #[tauri::command]
 fn close_app(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+#[tauri::command]
+fn start_dragging(window: tauri::Window) {
+    let _ = window.start_dragging();
+}
+
+#[tauri::command]
+fn enter_overlay(window: tauri::Window) {
+    if let Some(monitor) = window.current_monitor().ok().flatten() {
+        let size = monitor.size();
+        let pos = monitor.position();
+        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x: pos.x,
+            y: pos.y,
+        }));
+        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+            width: size.width,
+            height: size.height,
+        }));
+    }
+    let _ = window.set_resizable(false);
+    let _ = window.set_ignore_cursor_events(true);
+}
+
+#[tauri::command]
+fn switch_monitor(window: tauri::Window) {
+    if let Ok(monitors) = window.available_monitors() {
+        if monitors.len() < 2 { return; }
+
+        let _ = window.set_ignore_cursor_events(false);
+
+        let current_pos = window.outer_position().unwrap_or(tauri::PhysicalPosition { x: 0, y: 0 });
+
+        let mut current_idx = 0;
+        for (i, m) in monitors.iter().enumerate() {
+            let pos = m.position();
+            let size = m.size();
+            if current_pos.x >= pos.x && current_pos.x < pos.x + size.width as i32 {
+                current_idx = i;
+                break;
+            }
+        }
+
+        let next_idx = (current_idx + 1) % monitors.len();
+        let next = &monitors[next_idx];
+        let size = next.size();
+        let pos = next.position();
+
+        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x: pos.x,
+            y: pos.y,
+        }));
+        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+            width: size.width,
+            height: size.height,
+        }));
+
+        let _ = window.set_ignore_cursor_events(true);
+    }
+}
+
+#[tauri::command]
+fn exit_overlay(window: tauri::Window) {
+    let _ = window.set_ignore_cursor_events(false);
+    let _ = window.set_resizable(true);
+    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+        width: 900.0,
+        height: 750.0,
+    }));
+    let _ = window.center();
 }
 
 #[tauri::command]
@@ -55,23 +131,12 @@ fn main() {
             set_ignore_cursor_events,
             get_cursor_position,
             close_app,
+            start_dragging,
+            enter_overlay,
+            switch_monitor,
+            exit_overlay,
             take_screenshot,
         ])
-        .setup(|app| {
-            let window = app.get_webview_window("main").unwrap();
-            let monitor = window.current_monitor().unwrap().unwrap();
-            let size = monitor.size();
-            let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
-                width: size.width,
-                height: size.height,
-            }));
-            let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-                x: 0,
-                y: 0,
-            }));
-            let _ = window.set_ignore_cursor_events(true);
-            Ok(())
-        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -14,13 +14,17 @@
     "windows": [
       {
         "title": "Pixel Chat",
+        "width": 900,
+        "height": 750,
+        "minWidth": 600,
+        "minHeight": 500,
         "fullscreen": false,
-        "resizable": false,
+        "resizable": true,
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,
         "skipTaskbar": false,
-        "shadow": false
+        "center": true
       }
     ]
   },

@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { ANIMALS } from '../assets/animals';
 import { GameState } from '../App';
 import PixelAnimal from './PixelAnimal';
 
-const invoke = (window as any).__TAURI__?.core?.invoke;
+const getInvoke = () => (window as any).__TAURI__?.core?.invoke;
 
 interface LobbyProps {
   onJoin: (state: GameState, ws: WebSocket) => void;
@@ -16,13 +16,6 @@ export default function Lobby({ onJoin }: LobbyProps) {
   const [mode, setMode] = useState<'select' | 'create' | 'join'>('select');
   const [error, setError] = useState('');
   const [connecting, setConnecting] = useState(false);
-
-  useEffect(() => {
-    invoke?.('set_ignore_cursor_events', { ignore: false });
-    return () => {
-      invoke?.('set_ignore_cursor_events', { ignore: true });
-    };
-  }, []);
 
   const connect = (type: 'create_room' | 'join_room') => {
     if (!name.trim()) {
@@ -73,10 +66,15 @@ export default function Lobby({ onJoin }: LobbyProps) {
 
   return (
     <div style={styles.container}>
-      <div style={styles.panel}>
-      <button style={styles.closeButton} onClick={() => {
-          invoke?.('close_app') || window.close();
+      <div style={styles.titleBar} onMouseDown={(e) => {
+        if (!(e.target as HTMLElement).closest('button')) getInvoke()?.('start_dragging');
+      }}>
+        <span>Pixel Chat</span>
+        <button style={styles.closeButton} onMouseDown={(e) => e.stopPropagation()} onClick={() => {
+          try { getInvoke()?.('close_app'); } catch {} window.close();
         }}>X</button>
+      </div>
+      <div style={styles.panel}>
       <h1 style={styles.title}>Pixel Chat</h1>
       <p style={styles.subtitle}>픽셀 동물 채팅</p>
 
@@ -168,32 +166,42 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100vw',
     height: '100vh',
     display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
+    flexDirection: 'column',
+    background: '#1a1a2e',
+    borderRadius: '12px',
+    overflow: 'hidden',
   },
   panel: {
+    flex: 1,
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
-    justifyContent: 'center',
-    background: 'rgba(26, 26, 46, 0.95)',
     color: '#fff',
-    borderRadius: '16px',
-    padding: '2rem 3rem',
-    position: 'relative',
-    boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+    padding: '1rem 2rem 2rem',
+    overflowY: 'auto',
+  },
+  titleBar: {
+    width: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '0.6rem 1rem',
+    cursor: 'grab',
+    color: '#555',
+    fontSize: '0.75rem',
+    fontFamily: 'Courier New, monospace',
+    background: '#16213e',
+    borderBottom: '1px solid #0f3460',
+    flexShrink: 0,
   },
   closeButton: {
-    position: 'absolute',
-    top: '1rem',
-    right: '1rem',
-    width: '32px',
-    height: '32px',
+    width: '24px',
+    height: '24px',
     background: '#e94560',
     border: 'none',
     borderRadius: '50%',
     color: '#fff',
-    fontSize: '1rem',
+    fontSize: '0.8rem',
     fontWeight: 'bold',
     cursor: 'pointer',
     fontFamily: 'Courier New, monospace',

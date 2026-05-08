@@ -9,7 +9,7 @@ import { config } from 'dotenv';
 
 config({ path: join(process.pkg ? process.execPath + '/..' : join(__dirname, '../..'), '.env') });
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const HTTP_PORT = 3030;
 const WS_PORT = 3031;
 const PUBLIC_DIR = join(process.pkg ? process.execPath + '/..' : join(__dirname, '..'), 'public');
@@ -199,7 +199,7 @@ function getPlayersState(room: Room): object[] {
   }));
 }
 
-const wss = new WebSocketServer({ host: '0.0.0.0', port: WS_PORT });
+const wss = new WebSocketServer({ host: '0.0.0.0', port: WS_PORT, maxPayload: 10 * 1024 * 1024 });
 
 wss.on('connection', (ws) => {
   const playerId = generateId();
