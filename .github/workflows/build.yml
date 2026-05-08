@@ -1,0 +1,66 @@
+name: Build Pixel Chat
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  VITE_SERVER_IP: 49.50.128.187
+  VITE_SERVER_PORT: 3031
+  VITE_HTTP_PORT: 3030
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - platform: windows-latest
+            target: windows
+          - platform: macos-latest
+            target: macos
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        working-directory: client
+        run: npm install
+
+      - name: Create .env
+        run: |
+          echo "VITE_SERVER_IP=${{ env.VITE_SERVER_IP }}" > .env
+          echo "VITE_SERVER_PORT=${{ env.VITE_SERVER_PORT }}" >> .env
+          echo "VITE_HTTP_PORT=${{ env.VITE_HTTP_PORT }}" >> .env
+
+      - name: Build Tauri
+        working-directory: client
+        run: npx tauri build
+
+      - name: Upload Windows artifacts
+        if: matrix.target == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixel-chat-windows
+          path: |
+            client/src-tauri/target/release/pixel-chat.exe
+            client/src-tauri/target/release/bundle/nsis/*.exe
+
+      - name: Upload macOS artifacts
+        if: matrix.target == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixel-chat-macos
+          path: |
+            client/src-tauri/target/release/bundle/dmg/*.dmg

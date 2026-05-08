@@ -38,6 +38,7 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
   const [showPlayerList, setShowPlayerList] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [hoveredPlayer, setHoveredPlayer] = useState<{ name: string; x: number; y: number } | null>(null);
+  const [screenshotPreview, setScreenshotPreview] = useState<{ playerId: string; image: string; timestamp: number } | null>(null);
   const playersRef = useRef(players);
   const bubblesRef = useRef(chatBubbles);
   const historyEndRef = useRef<HTMLDivElement>(null);
@@ -86,6 +87,16 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
           });
           break;
         }
+        case 'screenshot_shared': {
+          setScreenshotPreview({ playerId: msg.playerId, image: msg.image, timestamp: Date.now() });
+          const senderName = playersRef.current.get(msg.playerId)?.name || '???';
+          setChatHistory((prev) => {
+            const next = [...prev, { name: senderName, message: '[스크린샷]', timestamp: Date.now() }];
+            if (next.length > MAX_HISTORY) next.shift();
+            return next;
+          });
+          break;
+        }
       }
     };
 
@@ -96,6 +107,12 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
   useEffect(() => {
     if (showHistory) historyEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory, showHistory]);
+
+  useEffect(() => {
+    if (!screenshotPreview) return;
+    const timer = setTimeout(() => setScreenshotPreview(null), 8000);
+    return () => clearTimeout(timer);
+  }, [screenshotPreview]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -317,6 +334,16 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
     setChatInput('');
   };
 
+  const handleScreenshot = async () => {
+    if (!invoke) return;
+    try {
+      const image: string = await invoke('take_screenshot');
+      ws.send(JSON.stringify({ type: 'screenshot', image }));
+    } catch (e) {
+      console.error('Screenshot failed:', e);
+    }
+  };
+
   const formatTime = (ts: number) => {
     const d = new Date(ts);
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -353,6 +380,9 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
             </div>
           )}
         </span>
+        <button style={styles.screenshotButton} onClick={handleScreenshot}>
+          캡처
+        </button>
         <button
           style={styles.historyButton}
           onClick={() => setShowHistory((v) => !v)}
@@ -400,6 +430,21 @@ export default function GameRoom({ initialState, ws, onLeave }: GameRoomProps) {
               </div>
             ))}
             <div ref={historyEndRef} />
+          </div>
+        </div>
+      )}
+
+      {screenshotPreview && (
+        <div style={styles.screenshotOverlay} data-interactive onClick={() => setScreenshotPreview(null)}>
+          <div style={styles.screenshotCard}>
+            <div style={styles.screenshotHeader}>
+              <span style={{ color: '#e94560', fontWeight: 'bold' }}>
+                {players.get(screenshotPreview.playerId)?.name || '???'}
+              </span>
+              <span style={{ color: '#888', fontSize: '0.7rem' }}>스크린샷</span>
+              <button style={styles.historyClose} onClick={() => setScreenshotPreview(null)}>X</button>
+            </div>
+            <img src={screenshotPreview.image} style={styles.screenshotImage} alt="screenshot" />
           </div>
         </div>
       )}
@@ -492,6 +537,49 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'Courier New, monospace',
     color: '#fff',
     whiteSpace: 'nowrap',
+  } as React.CSSProperties,
+  screenshotButton: {
+    padding: '0.3rem 0.75rem',
+    background: '#0f3460',
+    border: 'none',
+    borderRadius: '6px',
+    color: '#ccc',
+    cursor: 'pointer',
+    fontFamily: 'Courier New, monospace',
+    fontSize: '0.7rem',
+    WebkitAppRegion: 'no-drag',
+  } as React.CSSProperties,
+  screenshotOverlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    width: '100vw',
+    height: '100vh',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 50,
+    background: 'rgba(0,0,0,0.3)',
+  },
+  screenshotCard: {
+    background: 'rgba(22, 33, 62, 0.95)',
+    borderRadius: '10px',
+    padding: '0.75rem',
+    boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+    maxWidth: '660px',
+  },
+  screenshotHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    marginBottom: '0.5rem',
+    fontFamily: 'Courier New, monospace',
+    fontSize: '0.8rem',
+  },
+  screenshotImage: {
+    width: '100%',
+    borderRadius: '6px',
+    display: 'block',
   } as React.CSSProperties,
   historyButton: {
     padding: '0.3rem 0.75rem',

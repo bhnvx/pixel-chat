@@ -1,14 +1,48 @@
-import { createServer } from 'http';
+declare const process: NodeJS.Process & { pkg?: boolean; execPath: string };
+
+import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { readFileSync, existsSync, statSync } from 'fs';
 import { join, extname } from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
+import { randomBytes, createHash } from 'crypto';
+import { config } from 'dotenv';
+
+config({ path: join(process.pkg ? process.execPath + '/..' : join(__dirname, '../..'), '.env') });
 
 const APP_VERSION = '1.0.0';
 const HTTP_PORT = 3030;
 const WS_PORT = 3031;
-const PUBLIC_DIR = join(__dirname, '..', 'public');
+const PUBLIC_DIR = join(process.pkg ? process.execPath + '/..' : join(__dirname, '..'), 'public');
+const startTime = Date.now();
 
-// --- HTTP Server (버전 체크 + 프론트엔드 서빙) ---
+const ADMIN_ID = process.env.ADMIN_ID || 'admin';
+const ADMIN_PW = process.env.ADMIN_PW || 'admin';
+const adminSessions = new Set<string>();
+
+function generateToken(): string {
+  return randomBytes(32).toString('hex');
+}
+
+function parseBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve) => {
+    let body = '';
+    req.on('data', (chunk: Buffer) => body += chunk.toString());
+    req.on('end', () => resolve(body));
+  });
+}
+
+function getCookie(req: IncomingMessage, name: string): string | null {
+  const cookies = req.headers.cookie || '';
+  const match = cookies.split(';').find((c) => c.trim().startsWith(name + '='));
+  return match ? match.split('=')[1].trim() : null;
+}
+
+function isAdminAuthed(req: IncomingMessage): boolean {
+  const token = getCookie(req, 'admin_token');
+  return !!token && adminSessions.has(token);
+}
+
+// --- HTTP Server ---
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html',
@@ -20,12 +54,82 @@ const MIME_TYPES: Record<string, string> = {
   '.ico': 'image/x-icon',
 };
 
-const httpServer = createServer((req, res) => {
+function getAdminData() {
+  const roomList = Array.from(rooms.values()).map((room) => ({
+    code: room.code,
+    playerCount: room.players.size,
+    players: Array.from(room.players.values()).map(({ id, name, animal }) => ({ id, name, animal })),
+  }));
+
+  let totalPlayers = 0;
+  rooms.forEach((r) => totalPlayers += r.players.size);
+
+  return {
+    version: APP_VERSION,
+    uptime: Math.floor((Date.now() - startTime) / 1000),
+    totalRooms: rooms.size,
+    totalPlayers,
+    rooms: roomList,
+  };
+}
+
+const httpServer = createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
   if (req.url === '/api/version') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ version: APP_VERSION }));
+    return;
+  }
+
+  if (req.url === '/api/admin/login' && req.method === 'POST') {
+    const body = await parseBody(req);
+    try {
+      const { id, pw } = JSON.parse(body);
+      if (id === ADMIN_ID && pw === ADMIN_PW) {
+        const token = generateToken();
+        adminSessions.add(token);
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Set-Cookie': `admin_token=${token}; Path=/; HttpOnly; SameSite=Strict`,
+        });
+        res.end(JSON.stringify({ ok: true }));
+      } else {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, message: '아이디 또는 비밀번호가 틀렸습니다.' }));
+      }
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, message: 'Invalid request' }));
+    }
+    return;
+  }
+
+  if (req.url === '/api/admin/logout') {
+    const token = getCookie(req, 'admin_token');
+    if (token) adminSessions.delete(token);
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Set-Cookie': 'admin_token=; Path=/; HttpOnly; Max-Age=0',
+    });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.url === '/api/admin') {
+    if (!isAdminAuthed(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(getAdminData()));
+    return;
+  }
+
+  if (req.url === '/admin') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(ADMIN_HTML);
     return;
   }
 
@@ -50,6 +154,7 @@ const httpServer = createServer((req, res) => {
 
 httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
   console.log(`HTTP server running on http://0.0.0.0:${HTTP_PORT}`);
+  console.log(`Admin dashboard: http://localhost:${HTTP_PORT}/admin`);
   console.log(`App version: ${APP_VERSION}`);
 });
 
@@ -188,6 +293,16 @@ wss.on('connection', (ws) => {
         });
         break;
       }
+
+      case 'screenshot': {
+        if (!currentRoom) return;
+        broadcast(currentRoom, {
+          type: 'screenshot_shared',
+          playerId,
+          image: msg.image,
+        });
+        break;
+      }
     }
   });
 
@@ -203,3 +318,252 @@ wss.on('connection', (ws) => {
 });
 
 console.log(`WebSocket server running on ws://0.0.0.0:${WS_PORT}`);
+
+// --- Admin Dashboard HTML ---
+
+const ADMIN_HTML = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pixel Chat - Admin</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Courier New', monospace; background: #1a1a2e; color: #fff; min-height: 100vh; }
+
+  .login-wrap {
+    width: 100vw; height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .login-box {
+    background: #16213e; padding: 2.5rem; border-radius: 12px;
+    border: 1px solid #0f3460; width: 340px; text-align: center;
+  }
+  .login-box h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+  .login-box h1 span { color: #e94560; }
+  .login-box p { color: #888; font-size: 0.8rem; margin-bottom: 1.5rem; }
+  .login-box input {
+    width: 100%; padding: 0.7rem 1rem; margin-bottom: 0.75rem;
+    background: #1a1a2e; border: 2px solid #0f3460; border-radius: 8px;
+    color: #fff; font-family: 'Courier New', monospace; font-size: 0.9rem; outline: none;
+  }
+  .login-box button {
+    width: 100%; padding: 0.75rem; background: #e94560; border: none; border-radius: 8px;
+    color: #fff; font-family: 'Courier New', monospace; font-size: 1rem;
+    font-weight: bold; cursor: pointer; margin-top: 0.5rem;
+  }
+  .login-error { color: #e94560; font-size: 0.8rem; margin-top: 0.75rem; }
+
+  .header {
+    background: #16213e; padding: 1.25rem 2rem;
+    border-bottom: 2px solid #0f3460;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .header h1 { font-size: 1.5rem; }
+  .header h1 span { color: #e94560; }
+  .header-right { display: flex; align-items: center; gap: 1rem; }
+  .header .version { color: #888; font-size: 0.85rem; }
+  .logout-btn {
+    padding: 0.3rem 0.75rem; background: transparent; border: 1px solid #555;
+    border-radius: 6px; color: #888; cursor: pointer;
+    font-family: 'Courier New', monospace; font-size: 0.75rem;
+  }
+
+  .stats {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem;
+    padding: 1.5rem 2rem;
+  }
+  .stat-card {
+    background: #16213e; border-radius: 10px; padding: 1.25rem;
+    border: 1px solid #0f3460; text-align: center;
+  }
+  .stat-card .value { font-size: 2rem; font-weight: bold; color: #e94560; }
+  .stat-card .label { font-size: 0.8rem; color: #888; margin-top: 0.25rem; }
+
+  .content { padding: 0 2rem 2rem; }
+  .section-title { font-size: 1.1rem; margin-bottom: 1rem; color: #ccc; border-bottom: 1px solid #0f3460; padding-bottom: 0.5rem; }
+
+  .rooms-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+  .room-card {
+    background: #16213e; border-radius: 10px; padding: 1.25rem;
+    border: 1px solid #0f3460;
+  }
+  .room-card .room-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 0.75rem;
+  }
+  .room-card .room-code { font-size: 1.1rem; font-weight: bold; color: #e94560; }
+  .room-card .room-count {
+    background: #0f3460; padding: 0.2rem 0.6rem; border-radius: 12px;
+    font-size: 0.75rem; color: #ccc;
+  }
+  .player-row {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.35rem 0; font-size: 0.85rem; color: #ccc;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .player-row:last-child { border-bottom: none; }
+  .player-dot { font-size: 0.7rem; }
+
+  .empty { text-align: center; color: #555; padding: 3rem; font-size: 0.9rem; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #66bb6a; display: inline-block; margin-right: 0.5rem; }
+  .refresh-info { color: #555; font-size: 0.75rem; text-align: center; padding: 1rem; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div id="loginPage" class="login-wrap">
+  <div class="login-box">
+    <h1><span>Pixel Chat</span> Admin</h1>
+    <p>관리자 로그인</p>
+    <input type="text" id="loginId" placeholder="아이디" />
+    <input type="password" id="loginPw" placeholder="비밀번호" />
+    <button onclick="doLogin()">로그인</button>
+    <div id="loginError" class="login-error"></div>
+  </div>
+</div>
+
+<div id="dashboardPage" class="hidden">
+  <div class="header">
+    <h1><span>Pixel Chat</span> Admin</h1>
+    <div class="header-right">
+      <div class="version">
+        <span class="status-dot"></span>
+        <span id="versionText">v--</span>
+      </div>
+      <button class="logout-btn" onclick="doLogout()">로그아웃</button>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat-card">
+      <div class="value" id="statUptime">--</div>
+      <div class="label">Uptime</div>
+    </div>
+    <div class="stat-card">
+      <div class="value" id="statRooms">--</div>
+      <div class="label">Active Rooms</div>
+    </div>
+    <div class="stat-card">
+      <div class="value" id="statPlayers">--</div>
+      <div class="label">Online Players</div>
+    </div>
+    <div class="stat-card">
+      <div class="value" id="statWsPort">--</div>
+      <div class="label">WebSocket Port</div>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="section-title">Active Rooms</div>
+    <div id="roomsContainer" class="rooms-grid">
+      <div class="empty">Loading...</div>
+    </div>
+  </div>
+
+  <div class="refresh-info">2초마다 자동 새로고침</div>
+</div>
+
+<script>
+const ANIMAL_COLORS = {
+  cat:'#f4a261', dog:'#8d6e63', rabbit:'#ffb6c1', bird:'#64b5f6', frog:'#66bb6a',
+  penguin:'#37474f', bear:'#a1887f', fox:'#ff7043', hamster:'#ffcc80', panda:'#eeeeee',
+  owl:'#8d6e63', turtle:'#4caf50', chick:'#ffee58', whale:'#42a5f5', monkey:'#d4a373',
+  pig:'#f8bbd0', dragon:'#ab47bc', slime:'#69f0ae', ghost:'#e0e0e0',
+};
+
+let refreshTimer = null;
+
+function formatUptime(s) {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return h + 'h ' + m + 'm';
+  if (m > 0) return m + 'm ' + sec + 's';
+  return sec + 's';
+}
+
+async function doLogin() {
+  var id = document.getElementById('loginId').value;
+  var pw = document.getElementById('loginPw').value;
+  var errEl = document.getElementById('loginError');
+  errEl.textContent = '';
+
+  try {
+    var res = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id, pw: pw }),
+    });
+    var data = await res.json();
+    if (data.ok) {
+      showDashboard();
+    } else {
+      errEl.textContent = data.message;
+    }
+  } catch(e) {
+    errEl.textContent = '서버 연결 실패';
+  }
+}
+
+async function doLogout() {
+  await fetch('/api/admin/logout');
+  if (refreshTimer) clearInterval(refreshTimer);
+  document.getElementById('dashboardPage').classList.add('hidden');
+  document.getElementById('loginPage').classList.remove('hidden');
+  document.getElementById('loginId').value = '';
+  document.getElementById('loginPw').value = '';
+  document.getElementById('loginError').textContent = '';
+}
+
+function showDashboard() {
+  document.getElementById('loginPage').classList.add('hidden');
+  document.getElementById('dashboardPage').classList.remove('hidden');
+  refresh();
+  refreshTimer = setInterval(refresh, 2000);
+}
+
+async function refresh() {
+  try {
+    var res = await fetch('/api/admin');
+    if (res.status === 401) { doLogout(); return; }
+    var data = await res.json();
+
+    document.getElementById('versionText').textContent = 'v' + data.version;
+    document.getElementById('statUptime').textContent = formatUptime(data.uptime);
+    document.getElementById('statRooms').textContent = data.totalRooms;
+    document.getElementById('statPlayers').textContent = data.totalPlayers;
+    document.getElementById('statWsPort').textContent = '${WS_PORT}';
+
+    var container = document.getElementById('roomsContainer');
+    if (data.rooms.length === 0) {
+      container.innerHTML = '<div class="empty">현재 활성화된 방이 없습니다.</div>';
+      return;
+    }
+
+    container.innerHTML = data.rooms.map(function(room) {
+      var players = room.players.map(function(p) {
+        var color = ANIMAL_COLORS[p.animal] || '#888';
+        return '<div class="player-row"><span class="player-dot" style="color:' + color + '">'+String.fromCharCode(9679)+'</span>' + p.name + ' <span style="color:#555;font-size:0.7rem">(' + p.animal + ')</span></div>';
+      }).join('');
+      return '<div class="room-card"><div class="room-header"><span class="room-code">' + room.code + '</span><span class="room-count">' + room.playerCount + '명</span></div>' + players + '</div>';
+    }).join('');
+  } catch(e) {
+    document.getElementById('roomsContainer').innerHTML = '<div class="empty">서버 연결 실패</div>';
+  }
+}
+
+document.getElementById('loginPw').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') doLogin();
+});
+
+(async function checkSession() {
+  try {
+    var res = await fetch('/api/admin');
+    if (res.ok) showDashboard();
+  } catch(e) {}
+})();
+</script>
+</body>
+</html>`;
